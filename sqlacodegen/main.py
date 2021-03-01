@@ -29,6 +29,7 @@ def main():
                         help="don't generate classes, only tables")
     parser.add_argument('--nocomments', action='store_true', help="don't render column comments")
     parser.add_argument('--outfile', help='file to write output to (default: stdout)')
+    parser.add_argument('--cascade', help="default parameters for cascade")
     args = parser.parse_args()
 
     if args.version:
@@ -49,5 +50,6 @@ def main():
     # Write the generated model code to the specified file or standard output
     outfile = io.open(args.outfile, 'w', encoding='utf-8') if args.outfile else sys.stdout
     generator = CodeGenerator(metadata, args.noindexes, args.noconstraints, args.nojoined,
-                              args.noinflect, args.noclasses, nocomments=args.nocomments)
+                              args.noinflect, args.noclasses, nocomments=args.nocomments,
+                              cascade=args.cascade)
     generator.render(outfile)

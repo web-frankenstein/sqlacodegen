@@ -49,11 +49,38 @@ _re_enum_check_constraint = re.compile(r"(?:(?:.*?)\.)?(.*?) IN \((.+)\)")
 _re_enum_item = re.compile(r"'(.*?)(?<!\\)'")
 _re_invalid_identifier = re.compile(r'[^a-zA-Z0-9_]' if sys.version_info[0] < 3 else r'(?u)\W')
 
+_re_first_cap = re.compile('(.)([A-Z][a-z]+)')
+_re_all_cap = re.compile('([a-z0-9])([A-Z])')
+
+_cascade_default = ''
+
 
 class _DummyInflectEngine(object):
     @staticmethod
     def singular_noun(noun):
         return noun
+
+
+def _tablename_to_classname(tablename, inflect_engine):
+    tablename = _convert_to_valid_identifier(tablename)
+    camel_case_name = ''.join(part[:1].upper() + part[1:] for part in tablename.split('_'))
+    return inflect_engine.singular_noun(camel_case_name) or camel_case_name
+
+
+def _convert_to_valid_identifier(name):
+    assert name, 'Identifier cannot be empty'
+    if name[0].isdigit() or iskeyword(name):
+        name = '_' + name
+    elif name == 'metadata':
+        name = 'metadata_'
+
+    return _re_invalid_identifier.sub('_', name)
+
+
+def _underscore(name):
+    """Converts CamelCase to camel_case. See http://stackoverflow.com/questions/1175208"""
+    s1 = _re_first_cap.sub(r'\1_\2', name)
+    return _re_all_cap.sub(r'\1_\2', s1).lower()
 
 
 # In SQLAlchemy 0.x, constraint.columns is sometimes a list, on 1.x onwards, always a
@@ -178,21 +205,11 @@ class Model(object):
             if len(index.columns) > 1:
                 collector.add_import(index)
 
-    @staticmethod
-    def _convert_to_valid_identifier(name):
-        assert name, 'Identifier cannot be empty'
-        if name[0].isdigit() or iskeyword(name):
-            name = '_' + name
-        elif name == 'metadata':
-            name = 'metadata_'
-
-        return _re_invalid_identifier.sub('_', name)
-
 
 class ModelTable(Model):
     def __init__(self, table):
         super(ModelTable, self).__init__(table)
-        self.name = self._convert_to_valid_identifier(table.name)
+        self.name = _convert_to_valid_identifier(table.name)
 
     def add_imports(self, collector):
         super(ModelTable, self).add_imports(collector)
@@ -204,7 +221,7 @@ class ModelClass(Model):
 
     def __init__(self, table, association_tables, inflect_engine, detect_joined):
         super(ModelClass, self).__init__(table)
-        self.name = self._tablename_to_classname(table.name, inflect_engine)
+        self.name = _tablename_to_classname(tablename=table.name, inflect_engine=inflect_engine)
         self.children = []
         self.attributes = OrderedDict()
 
@@ -216,8 +233,8 @@ class ModelClass(Model):
         pk_column_names = set(col.name for col in table.primary_key.columns)
         for constraint in sorted(table.constraints, key=_get_constraint_sort_key):
             if isinstance(constraint, ForeignKeyConstraint):
-                target_cls = self._tablename_to_classname(constraint.elements[0].column.table.name,
-                                                          inflect_engine)
+                target_cls = _tablename_to_classname(constraint.elements[0].column.table.name,
+                                                     inflect_engine)
                 if (detect_joined and self.parent_name == 'Base' and
                         set(_get_column_names(constraint)) == pk_column_names):
                     self.parent_name = target_cls
@@ -236,14 +253,8 @@ class ModelClass(Model):
             relationship_ = ManyToManyRelationship(self.name, target_cls, association_table)
             self._add_attribute(relationship_.preferred_name, relationship_)
 
-    @classmethod
-    def _tablename_to_classname(cls, tablename, inflect_engine):
-        tablename = cls._convert_to_valid_identifier(tablename)
-        camel_case_name = ''.join(part[:1].upper() + part[1:] for part in tablename.split('_'))
-        return inflect_engine.singular_noun(camel_case_name) or camel_case_name
-
     def _add_attribute(self, attrname, value):
-        attrname = tempname = self._convert_to_valid_identifier(attrname)
+        attrname = tempname = _convert_to_valid_identifier(attrname)
         counter = 1
         while tempname in self.attributes:
             tempname = attrname + str(counter)
@@ -357,7 +368,7 @@ class CodeGenerator(object):
     def __init__(self, metadata, noindexes=False, noconstraints=False, nojoined=False,
                  noinflect=False, noclasses=False, indentation='    ', model_separator='\n\n',
                  ignored_tables=('alembic_version', 'migrate_version'), table_model=ModelTable,
-                 class_model=ModelClass,  template=None, nocomments=False):
+                 class_model=ModelClass,  template=None, nocomments=False, cascade=''):
         super(CodeGenerator, self).__init__()
         self.metadata = metadata
         self.noindexes = noindexes
@@ -371,9 +382,14 @@ class CodeGenerator(object):
         self.table_model = table_model
         self.class_model = class_model
         self.nocomments = nocomments
+        self.cascade = cascade
         self.inflect_engine = self.create_inflect_engine()
         if template:
             self.template = template
+
+        if cascade != '':
+            global _cascade_default
+            _cascade_default = cascade
 
         # Pick association tables from the metadata into their own set, don't process them normally
         links = defaultdict(lambda: [])
@@ -717,6 +733,8 @@ class CodeGenerator(object):
             rendered += '\n'
         for attr, relationship in model.attributes.items():
             if isinstance(relationship, Relationship):
+                if _cascade_default != '':
+                    relationship.kwargs['cascade'] = '"' + _cascade_default + '"'
                 rendered += '{0}{1} = {2}\n'.format(
                     self.indentation, attr, self.render_relationship(relationship))
 
@@ -729,6 +747,34 @@ class CodeGenerator(object):
     def render(self, outfile=sys.stdout):
         rendered_models = []
         for model in self.models:
+            models = self.models
+
+            for foreign_key_constraint in model.table.foreign_key_constraints:
+                parent_table_name = foreign_key_constraint.referred_table.name
+                child_table_name = model.table.name
+                child_model_name = model.name
+
+                parent_model = self._search(models, parent_table_name)
+
+                if parent_model is not None:
+                    relationship = Relationship(parent_model.name, child_model_name)
+                    if _cascade_default != '':
+                        relationship.kwargs['cascade'] = '"' + _cascade_default + '"'
+                    parent_model.attributes[child_table_name] = relationship
+                else:
+                    raise Exception('Parent model not found.')
+
+            if isinstance(model, ModelClass):
+                attributes_to_remove = []
+                for attribute_name in model.attributes:
+                    attribute = model.attributes.get(attribute_name)
+                    if isinstance(attribute, ManyToManyRelationship) or isinstance(attribute, ManyToOneRelationship):
+                        attributes_to_remove.append(attribute_name)
+
+                for attribute in attributes_to_remove:
+                    model.attributes.pop(attribute)
+
+        for model in self.models:
             if isinstance(model, self.class_model):
                 rendered_models.append(self.render_class(model))
             elif isinstance(model, self.table_model):
@@ -739,3 +785,14 @@ class CodeGenerator(object):
             metadata_declarations=self.render_metadata_declarations(),
             models=self.model_separator.join(rendered_models).rstrip('\n'))
         print(output, file=outfile)
+
+    @staticmethod
+    def _search(models, table_name):
+        found_model = None
+
+        for model in models:
+            if model.table.name == table_name:
+                found_model = model
+                break
+
+        return found_model
