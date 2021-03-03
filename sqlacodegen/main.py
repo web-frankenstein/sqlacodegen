@@ -30,6 +30,8 @@ def main():
     parser.add_argument('--nocomments', action='store_true', help="don't render column comments")
     parser.add_argument('--outfile', help='file to write output to (default: stdout)')
     parser.add_argument('--cascade', help="default parameters for cascade")
+    parser.add_argument('--parentchildrelationship', action='store_true',
+                        help="whether the relationship attribute is added to the parent or the child model (default: false")
     args = parser.parse_args()
 
     if args.version:
@@ -51,5 +53,5 @@ def main():
     outfile = io.open(args.outfile, 'w', encoding='utf-8') if args.outfile else sys.stdout
     generator = CodeGenerator(metadata, args.noindexes, args.noconstraints, args.nojoined,
                               args.noinflect, args.noclasses, nocomments=args.nocomments,
-                              cascade=args.cascade)
+                              cascade=args.cascade, parent_relationship=args.parentchildrelationship)
     generator.render(outfile)

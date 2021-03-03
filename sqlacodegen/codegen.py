@@ -160,8 +160,8 @@ class Model(object):
                         # least on PostgreSQL, Float can accurately represent both REAL and
                         # DOUBLE_PRECISION
                         if not isinstance(new_coltype, Float) and \
-                           not (isinstance(new_coltype, ARRAY) and
-                                isinstance(new_coltype.item_type, Float)):
+                                not (isinstance(new_coltype, ARRAY) and
+                                     isinstance(new_coltype.item_type, Float)):
                             break
                 except sqlalchemy.exc.CompileError:
                     # If the adapted column type can't be compiled, don't substitute it
@@ -368,7 +368,8 @@ class CodeGenerator(object):
     def __init__(self, metadata, noindexes=False, noconstraints=False, nojoined=False,
                  noinflect=False, noclasses=False, indentation='    ', model_separator='\n\n',
                  ignored_tables=('alembic_version', 'migrate_version'), table_model=ModelTable,
-                 class_model=ModelClass,  template=None, nocomments=False, cascade=''):
+                 class_model=ModelClass,  template=None, nocomments=False, cascade='',
+                 parent_child_relationship=False):
         super(CodeGenerator, self).__init__()
         self.metadata = metadata
         self.noindexes = noindexes
@@ -383,6 +384,7 @@ class CodeGenerator(object):
         self.class_model = class_model
         self.nocomments = nocomments
         self.cascade = cascade
+        self.parent_child_relationship = parent_child_relationship
         self.inflect_engine = self.create_inflect_engine()
         if template:
             self.template = template
@@ -746,33 +748,35 @@ class CodeGenerator(object):
 
     def render(self, outfile=sys.stdout):
         rendered_models = []
-        for model in self.models:
-            models = self.models
 
-            for foreign_key_constraint in model.table.foreign_key_constraints:
-                parent_table_name = foreign_key_constraint.referred_table.name
-                child_table_name = model.table.name
-                child_model_name = model.name
+        if self.parent_child_relationship:
+            for model in self.models:
+                models = self.models
 
-                parent_model = self._search(models, parent_table_name)
+                for foreign_key_constraint in model.table.foreign_key_constraints:
+                    parent_table_name = foreign_key_constraint.referred_table.name
+                    child_table_name = model.table.name
+                    child_model_name = model.name
 
-                if parent_model is not None:
-                    relationship = Relationship(parent_model.name, child_model_name)
-                    if _cascade_default != '':
-                        relationship.kwargs['cascade'] = '"' + _cascade_default + '"'
-                    parent_model.attributes[child_table_name] = relationship
-                else:
-                    raise Exception('Parent model not found.')
+                    parent_model = self._search(models, parent_table_name)
 
-            if isinstance(model, ModelClass):
-                attributes_to_remove = []
-                for attribute_name in model.attributes:
-                    attribute = model.attributes.get(attribute_name)
-                    if isinstance(attribute, ManyToManyRelationship) or isinstance(attribute, ManyToOneRelationship):
-                        attributes_to_remove.append(attribute_name)
+                    if parent_model is not None:
+                        relationship = Relationship(parent_model.name, child_model_name)
+                        if _cascade_default != '':
+                            relationship.kwargs['cascade'] = '"' + _cascade_default + '"'
+                        parent_model.attributes[child_table_name] = relationship
+                    else:
+                        raise Exception('Parent model not found.')
 
-                for attribute in attributes_to_remove:
-                    model.attributes.pop(attribute)
+                if isinstance(model, ModelClass):
+                    attributes_to_remove = []
+                    for attribute_name in model.attributes:
+                        attribute = model.attributes.get(attribute_name)
+                        if isinstance(attribute, ManyToManyRelationship) or isinstance(attribute, ManyToOneRelationship):
+                            attributes_to_remove.append(attribute_name)
+
+                    for attribute in attributes_to_remove:
+                        model.attributes.pop(attribute)
 
         for model in self.models:
             if isinstance(model, self.class_model):
