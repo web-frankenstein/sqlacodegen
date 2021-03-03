@@ -53,5 +53,5 @@ def main():
     outfile = io.open(args.outfile, 'w', encoding='utf-8') if args.outfile else sys.stdout
     generator = CodeGenerator(metadata, args.noindexes, args.noconstraints, args.nojoined,
                               args.noinflect, args.noclasses, nocomments=args.nocomments,
-                              cascade=args.cascade, parent_relationship=args.parentchildrelationship)
+                              cascade=args.cascade, parent_child_relationship=args.parentchildrelationship)
     generator.render(outfile)
